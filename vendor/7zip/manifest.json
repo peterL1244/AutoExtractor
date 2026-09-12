@@ -1,0 +1,9 @@
+{
+  "version": "26.03",
+  "source": "https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe",
+  "sourceSha256": "0859c524b8a63551848f0c246abddcb1d0b7b656b0fbfe879f8d85e61a9e6edd",
+  "files": {
+    "7z.exe": "6EE3C0ED0B27663C1B948AE85A7C0BB073AED1498983182F3F0DF1F6A8C30B2F",
+    "7z.dll": "65E4C1F855F9EF6E8F0F5DF8E3F27D9EB5F07311408639DA0A1CA0B8F4871B0D"
+  }
+}

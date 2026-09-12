@@ -8,4 +8,5 @@ TestResults/
 *.user
 **/AutoExtractor_Output/
 **/.autoextractor-*/
-
+**/.autoextractor*
+**/.AutoExtractor*

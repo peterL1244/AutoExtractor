@@ -1,0 +1,48 @@
+name: Build and release Windows portable app
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          global-json-file: global.json
+      - name: Verify, test and package
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - name: Upload portable package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: AutoExtractor-win-x64
+          path: |
+            artifacts/AutoExtractor-v0.1.0-win-x64.zip
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    permissions:
+      contents: write
+      actions: read
+    runs-on: windows-latest
+    steps:
+      - name: Download verified build and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh run download $env:RUN_ID -n AutoExtractor-win-x64 -D release
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          gh release create $env:RELEASE_TAG release/*.zip release/SHA256SUMS.txt --verify-tag --title "AutoExtractor $env:RELEASE_TAG" --notes "Windows x64 中文便携版。下载 ZIP 后解压，双击 AutoExtractor.exe。包含离线解压引擎；使用说明和已知限制请查看仓库 README。"
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

@@ -1,20 +1,47 @@
 namespace AutoExtractor.Core;
 
-public enum ArchiveFormat { Unknown, Zip, SevenZip, Rar }
-public enum VolumeKind { Single, ByteSplit, RarParts, RarLegacy, ZipSplit }
-public enum CandidateStatus { Ready, NeedsConfirmation, MissingVolumes, Ignored }
+public enum ArchiveFormat
+{
+    Unknown, Zip, SevenZip, Rar
+}
+public enum VolumeKind
+{
+    Single, ByteSplit, RarParts, RarLegacy, ZipSplit
+}
+public enum CandidateStatus
+{
+    Ready, NeedsConfirmation, MissingVolumes, Ignored
+}
 public record ArchiveMember(string SourcePath, string RestoredName, int Order);
 public sealed record ArchiveCandidate
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
-    public required string DisplayName { get; init; }
-    public ArchiveFormat Format { get; init; }
-    public VolumeKind VolumeKind { get; init; }
+    public required string DisplayName
+    {
+        get; init;
+    }
+    public ArchiveFormat Format
+    {
+        get; init;
+    }
+    public VolumeKind VolumeKind
+    {
+        get; init;
+    }
     public IReadOnlyList<ArchiveMember> Members { get; init; } = [];
-    public int EntryMemberIndex { get; init; }
-    public CandidateStatus Status { get; init; }
+    public int EntryMemberIndex
+    {
+        get; init;
+    }
+    public CandidateStatus Status
+    {
+        get; init;
+    }
     public string Explanation { get; init; } = "";
-    public bool IsSelfExtracting { get; init; }
+    public bool IsSelfExtracting
+    {
+        get; init;
+    }
     public string EntryPath => Members[EntryMemberIndex].SourcePath;
 }
 public record ScanResult(IReadOnlyList<ArchiveCandidate> Candidates, IReadOnlyList<string> Messages);
@@ -30,7 +57,10 @@ public interface IRenameService
     Task RestoreAsync(string journalPath, CancellationToken cancellationToken = default);
     IReadOnlyList<string> FindJournals(string directory);
 }
-public enum EngineFailure { NeedsPassword, PasswordOrCorruption, MissingVolumes, CorruptArchive, Unsupported, DiskFull, AccessDenied, UnsafePath }
+public enum EngineFailure
+{
+    NeedsPassword, PasswordOrCorruption, MissingVolumes, CorruptArchive, Unsupported, DiskFull, AccessDenied, UnsafePath
+}
 public sealed class ArchiveException(EngineFailure failure, string message) : Exception(message)
 {
     public EngineFailure Failure { get; } = failure;
