@@ -18,7 +18,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Desktop smoke tests failed' }
     }
     $artifactRoot = [IO.Path]::GetFullPath((Join-Path $root 'artifacts'))
-    $publishPath = [IO.Path]::GetFullPath((Join-Path $artifactRoot 'AutoExtractor-win-x64'))
+    $version = ([xml](Get-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid package version' }
+    $packageName = "AutoExtractor-v$version-win-x64"
+    $publishPath = [IO.Path]::GetFullPath((Join-Path $artifactRoot $packageName))
     if (-not $publishPath.StartsWith($artifactRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid artifact directory' }
     if (Test-Path -LiteralPath $publishPath) { Remove-Item -LiteralPath $publishPath -Recurse -Force }
     & $DotNet publish src/AutoExtractor.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -o $publishPath --nologo
@@ -31,7 +34,7 @@ try {
     $noticeRoot = Join-Path $root 'vendor/dotnet'
     if (Test-Path -LiteralPath $noticeRoot) { Copy-Item -LiteralPath $noticeRoot -Destination (Join-Path $publishPath 'runtime-notices') -Recurse }
     & (Join-Path $PSScriptRoot 'verify-portable.ps1') -PackageDirectory $publishPath
-    $zipPath = Join-Path $artifactRoot 'AutoExtractor-v0.1.0-win-x64.zip'
+    $zipPath = Join-Path $artifactRoot ($packageName + '.zip')
     if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
     & (Join-Path $root 'vendor/7zip/7z.exe') a -tzip '-mx=7' $zipPath $publishPath
     if ($LASTEXITCODE -ne 0) { throw 'Portable ZIP creation failed' }

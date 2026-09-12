@@ -43,14 +43,62 @@ public partial class MainWindow : Window
         CountLabel.Text = $"任务列表  /  {rows.Count}";
         EmptyState.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
-    private void AddRows(IEnumerable<ArchiveCandidate> candidates)
+    private void AddRows(IEnumerable<ArchiveCandidate> candidates, bool mergePending = false)
     {
-        var known = rows.SelectMany(r => r.Candidate.Members).Select(m => Path.GetFullPath(m.SourcePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var candidate in candidates.Where(c => c.Status != CandidateStatus.Ignored && c.Members.Count > 0))
+        var known = rows.SelectMany(r => r.Candidate.Members.Select(m => Path.GetFullPath(m.SourcePath))
+            .Concat(r.Result is null ? [] : r.Candidate.Members.Select(m => Path.Combine(Path.GetDirectoryName(r.Candidate.EntryPath)!, m.RestoredName))))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var incoming in candidates.Where(c => c.Status != CandidateStatus.Ignored && c.Members.Count > 0))
         {
+            var candidate = incoming;
+            bool included = true;
+            if (mergePending)
+            {
+                var memberPaths = candidate.Members.Select(m => Path.GetFullPath(m.SourcePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var overlaps = rows.Where(r => r.Candidate.Members.Any(m => memberPaths.Contains(Path.GetFullPath(m.SourcePath)))).ToArray();
+                if (overlaps.Length > 0 && (overlaps.Length > 1 || memberPaths.Count > overlaps[0].Candidate.Members.Count)
+                    && overlaps.All(r => r.Result is null && r.Candidate.Members.All(m => File.Exists(m.SourcePath) && memberPaths.Contains(Path.GetFullPath(m.SourcePath)))))
+                {
+                    included = overlaps.All(r => r.Included);
+                    foreach (var row in overlaps)
+                    {
+                        rows.Remove(row);
+                        foreach (var member in row.Candidate.Members)
+                            known.Remove(Path.GetFullPath(member.SourcePath));
+                    }
+                }
+            }
             if (candidate.Members.Any(m => known.Contains(Path.GetFullPath(m.SourcePath))))
-                continue;
-            rows.Add(new TaskRow(candidate));
+            {
+                if (!mergePending)
+                    continue;
+                var memberPaths = candidate.Members.Select(m => Path.GetFullPath(m.SourcePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var overlaps = rows.Where(r => r.Candidate.Members.Any(m => memberPaths.Contains(Path.GetFullPath(m.SourcePath)))).ToArray();
+                const string conflict = "新导入内容与已有任务的分卷发生冲突，请通过“调整分卷”重新选择成员和顺序。";
+                foreach (var row in overlaps.Where(r => r.Result is null
+                    && (candidate.Status != CandidateStatus.Ready || !r.Candidate.Members.All(m => memberPaths.Contains(Path.GetFullPath(m.SourcePath))))))
+                {
+                    row.Candidate = row.Candidate with
+                    {
+                        Status = CandidateStatus.NeedsConfirmation,
+                        Explanation = conflict
+                    };
+                    row.Status = "待确认";
+                    if (!row.Details.Contains(conflict, StringComparison.Ordinal))
+                        row.Details += Environment.NewLine + conflict;
+                }
+                var newMembers = candidate.Members.Where(m => !known.Contains(Path.GetFullPath(m.SourcePath))).ToArray();
+                if (newMembers.Length == 0)
+                    continue;
+                candidate = candidate with
+                {
+                    Members = newMembers,
+                    EntryMemberIndex = 0,
+                    Status = CandidateStatus.NeedsConfirmation,
+                    Explanation = conflict
+                };
+            }
+            rows.Add(new TaskRow(candidate) { Included = included });
             foreach (var member in candidate.Members)
                 known.Add(Path.GetFullPath(member.SourcePath));
         }
@@ -67,8 +115,12 @@ public partial class MainWindow : Window
         StatusLabel.Text = "正在识别文件内容…";
         try
         {
-            var scan = await Task.Run(() => scanner.ScanAsync(inputs, active.Token));
-            AddRows(scan.Candidates);
+            // Rescan pending, still-present inputs together so separately added folders can form one group.
+            // Keep completed or moved tasks bound to their original journal identity.
+            var scanInputs = inputs.Concat(rows.Where(r => r.Result is null && r.Candidate.Members.All(m => File.Exists(m.SourcePath)))
+                .SelectMany(r => r.Candidate.Members.Select(m => m.SourcePath))).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var scan = await Task.Run(() => scanner.ScanAsync(scanInputs, active.Token));
+            AddRows(scan.Candidates, mergePending: true);
             StatusLabel.Text = scan.Candidates.Count == 0 ? "没有发现可处理的压缩包" : "扫描完成 · 点击开始解压";
             if (scan.Messages.Count > 0)
                 DetailsBox.Text = string.Join(Environment.NewLine, scan.Messages);
@@ -222,8 +274,16 @@ public partial class MainWindow : Window
         if (active is not null)
             return;
         var row = TaskList.SelectedItem as TaskRow;
-        var initial = row?.Candidate.Members.FirstOrDefault()?.SourcePath;
-        var dialog = new OpenFileDialog { Title = "选择改名记录以恢复原名", Filter = "改名记录|*.json", Multiselect = true, InitialDirectory = initial is null ? "" : Path.Combine(Path.GetDirectoryName(initial)!, ".autoextractor-journals") };
+        string initialDirectory = "";
+        if (row is not null)
+        {
+            try
+            {
+                initialDirectory = RenameService.GetJournalDirectory(row.Candidate);
+            }
+            catch (IOException) { } // An unprocessable candidate has no journal; allow selecting an existing record.
+        }
+        var dialog = new OpenFileDialog { Title = "选择记录以恢复原名和原位置", Filter = "改名记录|*.json", Multiselect = true, InitialDirectory = initialDirectory };
         if (row?.Result?.Journals.FirstOrDefault() is string recent)
             dialog.InitialDirectory = Path.GetDirectoryName(recent);
         if (dialog.ShowDialog(this) != true)

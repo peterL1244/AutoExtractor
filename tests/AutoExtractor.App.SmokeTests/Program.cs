@@ -24,7 +24,7 @@ internal static class Program
             {
                 await Tests((MainWindow)app.MainWindow);
                 outcome = 0;
-                Console.WriteLine("PASS WPF smoke: import, extract, password retry, manual continuation, group correction, cancel/retry, missing-input identity, modified-target identity, failure colors");
+                Console.WriteLine("PASS WPF smoke: cross-folder import/collection/restore, overlap/ambiguity handling, import, extract, password retry, manual continuation, group correction, cancel/retry, missing-input identity, modified-target identity, failure colors");
             }
             catch (Exception ex) { Console.WriteLine("FAIL WPF smoke: " + ex); }
             finally { app.Shutdown(outcome); }
@@ -68,6 +68,8 @@ internal static class Program
     {
         Control<TextBox>(window, "OutputBox").Text = Path.Combine(Root, "output");
         await RetryIdentityRegressions(window);
+        await PendingOverlapImports(window);
+        await CrossFolderImports(window);
         var simple = Zip("测试包.tmp", ("hello.txt", "中文内容"u8.ToArray()));
         await window.ImportAsync([simple]);
         Check(Rows(window).Count == 1, "Import should produce one task");
@@ -154,6 +156,90 @@ internal static class Program
         Click(window, "StartButton");
         await Idle(window);
         Check(Rows(window).Single().Status == "完成", "First retry after rename/cancel must work: " + Rows(window).Single().Details);
+    }
+    static async Task CrossFolderImports(MainWindow window)
+    {
+        var zip = Zip("cross-folder-source.zip", ("verified.txt", "separate folders"u8.ToArray()));
+        var bytes = File.ReadAllBytes(zip);
+        var firstDir = Path.Combine(Root, "separate", "1");
+        var secondDir = Path.Combine(Root, "separate", "2");
+        Directory.CreateDirectory(firstDir);
+        Directory.CreateDirectory(secondDir);
+        var first = Path.Combine(firstDir, "download.zip.001");
+        var second = Path.Combine(secondDir, "download.zip.002");
+        await File.WriteAllBytesAsync(first, bytes[..(bytes.Length / 2)]);
+        await File.WriteAllBytesAsync(second, bytes[(bytes.Length / 2)..]);
+        await window.ImportAsync([firstDir]);
+        Check(Rows(window).Count == 1, "First folder should produce one pending group");
+        Rows(window).Single().Included = false;
+        await window.ImportAsync([secondDir]);
+        Check(Rows(window).Count == 1 && Rows(window).Single().Candidate.Members.Count == 2,
+            "Importing the second folder should consolidate the earlier pending group into one task");
+        var row = Rows(window).Single();
+        Check(!row.Included, "Growing a group must preserve its unselected state");
+        Check(row.Subtitle.Contains("2 个文件夹"), "Cross-folder sources should be visible in the task");
+        Check(row.Details.Contains(firstDir) && row.Details.Contains(secondDir), "Details must show original source folders");
+        row.Included = true;
+        Click(window, "StartButton");
+        await Idle(window);
+        Check(row.Status == "完成", "Cross-folder extraction failed: " + row.Details);
+        var result = Directory.GetFiles(row.Result!.OutputDirectory, "verified.txt", SearchOption.AllDirectories).Single();
+        Check(File.ReadAllText(result) == "separate folders", "Cross-folder extracted content mismatch");
+        Check(File.Exists(first) && File.Exists(Path.Combine(firstDir, "download.zip.002")) && !File.Exists(second),
+            "Validated volumes must be collected into the entry volume folder");
+        await window.ImportAsync([firstDir]);
+        Check(Rows(window).Count == 1 && ReferenceEquals(row, Rows(window).Single()), "Reimport must preserve completed task identity");
+        await new RenameService().RestoreAsync(row.Result.Journals.Single());
+        Check(File.Exists(first) && File.Exists(second), "Restore must return members to their original folders");
+        Check(File.ReadAllBytes(first).Concat(File.ReadAllBytes(second)).SequenceEqual(bytes), "Restore changed source contents");
+
+        var group = new GroupDialog(null);
+        group.Loaded += (_, _) => group.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var members = (System.Collections.ObjectModel.ObservableCollection<string>)Find<ListBox>(group).Single().ItemsSource;
+            members.Add(first);
+            members.Add(second);
+            Find<Button>(group).Single(b => Equals(b.Content, "确认并加入任务")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }));
+        group.ShowDialog();
+        Check(group.Candidate?.Members.Count == 2, "Manual grouping must accept volumes from separate folders");
+        Click(window, "ClearButton");
+
+    }
+    static async Task PendingOverlapImports(MainWindow window)
+    {
+        var zip = Zip("overlap-source.zip", ("verified.txt", "pending identity"u8.ToArray()));
+        var bytes = File.ReadAllBytes(zip);
+        var firstDir = Path.Combine(Root, "overlap", "1");
+        var secondDir = Path.Combine(Root, "overlap", "2");
+        Directory.CreateDirectory(firstDir);
+        Directory.CreateDirectory(secondDir);
+        var first = Path.Combine(firstDir, "download.zip.001");
+        var second = Path.Combine(secondDir, "download.zip.002");
+        await File.WriteAllBytesAsync(first, bytes[..(bytes.Length / 2)]);
+        await File.WriteAllBytesAsync(second, bytes[(bytes.Length / 2)..]);
+        await window.ImportAsync([firstDir, secondDir]);
+        var originalRow = Rows(window).Single();
+        var thirdDir = Path.Combine(Root, "overlap", "3");
+        Directory.CreateDirectory(thirdDir);
+        var replacement = Path.Combine(thirdDir, "download.zip.002");
+        File.Move(second, replacement);
+        await window.ImportAsync([firstDir, thirdDir]);
+        Check(Rows(window).Count == 2 && ReferenceEquals(originalRow, Rows(window).First()),
+            "A missing-member task must retain its identity while exposing newly imported replacement volumes");
+        Check(Rows(window).Last().Candidate.Status == CandidateStatus.NeedsConfirmation
+            && Rows(window).Last().Candidate.Members.Single().SourcePath == replacement,
+            "New overlapping group members must be available for manual confirmation instead of silently discarded");
+        Click(window, "ClearButton");
+        File.Move(replacement, second);
+        await window.ImportAsync([firstDir, secondDir]);
+        var earlier = Rows(window).Single();
+        File.Copy(first, Path.Combine(thirdDir, "download.zip.001"));
+        await window.ImportAsync([thirdDir]);
+        Check(earlier.Candidate.Status == CandidateStatus.NeedsConfirmation && earlier.Status == "待确认",
+            "A newly discovered duplicate volume must invalidate the earlier automatic group");
+        Check(Rows(window).Count == 2, "Ambiguous newly added member must remain visible");
+        Click(window, "ClearButton");
     }
     static async Task RetryIdentityRegressions(MainWindow window)
     {

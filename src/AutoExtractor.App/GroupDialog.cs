@@ -38,7 +38,7 @@ public sealed class GroupDialog : Window
         var scroll = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         root.Children.Add(scroll);
         panel.Children.Add(new TextBlock { Text = "将同一压缩包的分卷按顺序排列", FontSize = 19, FontWeight = FontWeights.SemiBold });
-        panel.Children.Add(new TextBlock { Text = "首卷在上，末卷在下。ZIP 原生分卷的 .zip 主文件放最后。\n软件会先验证组合，验证成功后才原地还原名称。", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 16), Foreground = System.Windows.Media.Brushes.SlateGray });
+        panel.Children.Add(new TextBlock { Text = "首卷在上，末卷在下。ZIP 原生分卷的 .zip 主文件放最后。\n可添加不同文件夹中的分卷；验证后集中到入口卷文件夹，并记录原名和原位置。", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 16), Foreground = System.Windows.Media.Brushes.SlateGray });
         list.ItemsSource = files;
         panel.Children.Add(list);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 18) };
@@ -74,9 +74,9 @@ public sealed class GroupDialog : Window
     {
         var dialog = new OpenFileDialog { Multiselect = true, Filter = "所有文件|*.*" };
         if (dialog.ShowDialog(this) == true)
-        foreach (var path in dialog.FileNames)
-        if (!files.Contains(path, StringComparer.OrdinalIgnoreCase))
-            files.Add(path);
+            foreach (var path in dialog.FileNames)
+                if (!files.Contains(path, StringComparer.OrdinalIgnoreCase))
+                    files.Add(path);
     }
     private void Remove()
     {
@@ -102,11 +102,6 @@ public sealed class GroupDialog : Window
         if (name.Length == 0 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.EndsWith('.') || name == "..")
         {
             MessageBox.Show(this, "请输入有效的基础文件名。");
-            return;
-        }
-        if (files.Select(Path.GetDirectoryName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1)
-        {
-            MessageBox.Show(this, "请先将同一组分卷放在同一个文件夹。");
             return;
         }
         var type = (VolumeKind)kind.SelectedIndex;

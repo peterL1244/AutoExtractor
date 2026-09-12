@@ -85,7 +85,7 @@ public sealed class ExtractionCoordinator(IArchiveScanner scanner, IRenameServic
                 var stops = options.SmartStop ? FindApplicationDirectories(completed, scan.Candidates) : [];
                 foreach (var child in scan.Candidates.Where(c => c.Status != CandidateStatus.Ignored))
                 {
-                    if (stops.Any(dir => IsWithin(child.EntryPath, dir)))
+                    if (stops.Any(dir => child.Members.Any(member => IsWithin(member.SourcePath, dir))))
                     {
                         remaining.Add(child);
                         messages.Add($"{child.DisplayName}：检测到程序及配套文件，已智能停止该子目录；需要时可手动继续。");

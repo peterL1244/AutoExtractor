@@ -29,7 +29,14 @@ public sealed class TaskRow(ArchiveCandidate candidate) : INotifyPropertyChanged
             Changed();
         }
     }
-    public string Subtitle => $"{Candidate.Members.Count} 个文件 · {System.IO.Path.GetDirectoryName(Candidate.EntryPath)}";
+    public string Subtitle
+    {
+        get
+        {
+            int folders = Candidate.Members.Select(m => System.IO.Path.GetDirectoryName(m.SourcePath)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            return folders > 1 ? $"{Candidate.Members.Count} 个文件 · 来自 {folders} 个文件夹" : $"{Candidate.Members.Count} 个文件 · {System.IO.Path.GetDirectoryName(Candidate.EntryPath)}";
+        }
+    }
     public string FormatLabel => Candidate.Format == ArchiveFormat.SevenZip ? "7z" : Candidate.Format.ToString().ToUpperInvariant();
     private string status = candidate.Status switch { CandidateStatus.Ready => "待解压", CandidateStatus.MissingVolumes => "缺少分卷", _ => "待确认" };
     public string Status
@@ -46,7 +53,14 @@ public sealed class TaskRow(ArchiveCandidate candidate) : INotifyPropertyChanged
     {
         get; set;
     }
-    public string Details { get; set; } = candidate.Explanation + Environment.NewLine + string.Join(Environment.NewLine, candidate.Members.Select(m => $"{System.IO.Path.GetFileName(m.SourcePath)}  →  {m.RestoredName}"));
+    public string Details { get; set; } = Describe(candidate);
+    private static string Describe(ArchiveCandidate candidate)
+    {
+        bool acrossFolders = candidate.Members.Select(m => System.IO.Path.GetDirectoryName(m.SourcePath)).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1;
+        string destination = acrossFolders ? $"\n验证后集中到：{System.IO.Path.GetDirectoryName(candidate.EntryPath)}\n恢复原名时会同时恢复原文件夹位置。" : "";
+        return candidate.Explanation + destination + Environment.NewLine + string.Join(Environment.NewLine,
+            candidate.Members.Select(m => $"{(acrossFolders ? m.SourcePath : System.IO.Path.GetFileName(m.SourcePath))}  →  {m.RestoredName}"));
+    }
     public event PropertyChangedEventHandler? PropertyChanged;
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

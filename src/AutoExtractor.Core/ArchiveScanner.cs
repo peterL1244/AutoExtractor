@@ -36,7 +36,8 @@ public static class SignatureDetector
                         continue;
                     return new(format, exe, exe, rar.Volume, rar.Number);
                 }
-                bool volume = b.StartsWith(new byte[] { 80, 75, 7, 8 });
+                bool volume = b.StartsWith(new byte[] { 80, 75, 7, 8 }) ||
+                    format == ArchiveFormat.Zip && HasZipVolumeFooter(f, bytes);
                 return new(format, exe, exe, volume);
             }
         }
@@ -51,6 +52,24 @@ public static class SignatureDetector
             if (bytes.AsSpan(i, 4).SequenceEqual(new byte[] { 80, 75, 5, 6 }) && i + 22 + BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i + 20, 2)) == bytes.Length)
                 return new(ArchiveFormat.Zip, exe, exe, BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i + 4, 2)) > 0);
         return new(ArchiveFormat.Unknown, exe, false, false);
+    }
+    static bool HasZipVolumeFooter(FileStream file, ReadOnlySpan<byte> header)
+    {
+        // Native ZIP terminal volumes may begin with a local file record. Their volume
+        // identity lives in EOCD, so do not let the recognized first record bypass the tail.
+        ReadOnlySpan<byte> tail = header;
+        if (file.Length > header.Length)
+        {
+            file.Position = Math.Max(0, file.Length - 65557);
+            byte[] bytes = new byte[(int)(file.Length - file.Position)];
+            file.ReadExactly(bytes);
+            tail = bytes;
+        }
+        for (int i = Math.Max(0, tail.Length - 65557); i <= tail.Length - 22; i++)
+            if (tail.Slice(i, 4).SequenceEqual(new byte[] { 80, 75, 5, 6 }) &&
+                i + 22 + BinaryPrimitives.ReadUInt16LittleEndian(tail.Slice(i + 20, 2)) == tail.Length)
+                return BinaryPrimitives.ReadUInt16LittleEndian(tail.Slice(i + 4, 2)) > 0;
+        return false;
     }
     static ArchiveFormat At(ReadOnlySpan<byte> b)
     {
@@ -150,7 +169,7 @@ public static class SignatureDetector
 public sealed class ArchiveScanner : IArchiveScanner
 {
     static readonly HashSet<string> Native = new(StringComparer.OrdinalIgnoreCase) { ".jar", ".apk", ".aab", ".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm", ".odt", ".ods", ".odp", ".epub", ".nupkg", ".pak", ".unity3d", ".assets", ".vpk", ".rpa" };
-    record Item(string Path, SignatureInfo Sig, string Key, string Stem, int Number, VolumeKind Kind);
+    record Item(string Path, SignatureInfo Sig, string Key, string Stem, int Number, VolumeKind Kind, bool CrossDirectoryAmbiguous = false);
     public Task<ScanResult> ScanAsync(IEnumerable<string> inputs, CancellationToken cancellationToken = default)
     {
         var inputPaths = inputs.Select(Path.GetFullPath).ToArray();
@@ -193,21 +212,31 @@ public sealed class ArchiveScanner : IArchiveScanner
             catch (IOException e) { messages.Add($"无法读取 {p}: {e.Message}"); }
             catch (UnauthorizedAccessException e) { messages.Add($"无法读取 {p}: {e.Message}"); }
         }
-        // Include the unnumbered ZIP/RAR terminal/first member in explicit volume families.
+        // Include anchors from already-scoped paths only. Keep each member's local key until
+        // the family-level ambiguity check decides whether separate directories can be joined.
         for (int i = 0; i < items.Count; i++)
-        if (items[i].Kind == VolumeKind.Single)
-        {
-            var x = items[i];
-            var family = items.FirstOrDefault(y => y.Kind is VolumeKind.ZipSplit or VolumeKind.RarLegacy && string.Equals(Path.GetDirectoryName(y.Path), Path.GetDirectoryName(x.Path), StringComparison.OrdinalIgnoreCase) && string.Equals(y.Stem, Path.GetFileNameWithoutExtension(x.Path), StringComparison.OrdinalIgnoreCase));
-            if (family != null && (family.Kind == VolumeKind.ZipSplit && Path.GetExtension(x.Path).Equals(".zip", StringComparison.OrdinalIgnoreCase) || family.Kind == VolumeKind.RarLegacy && Path.GetExtension(x.Path).Equals(".rar", StringComparison.OrdinalIgnoreCase)))
-                items[i] = x with
+            if (items[i].Kind == VolumeKind.Single)
+            {
+                var x = items[i];
+                var anchorKind = Path.GetExtension(x.Path).ToLowerInvariant() switch
                 {
-                    Key = family.Key,
-                    Stem = family.Stem,
-                    Kind = family.Kind,
-                    Number = family.Kind == VolumeKind.ZipSplit ? int.MaxValue : 0
+                    ".zip" => VolumeKind.ZipSplit,
+                    ".rar" => VolumeKind.RarLegacy,
+                    _ => VolumeKind.Single
                 };
-        }
+                var family = anchorKind == VolumeKind.Single ? null : items.FirstOrDefault(y => y.Kind == anchorKind &&
+                    string.Equals(y.Stem, Path.GetFileNameWithoutExtension(x.Path), StringComparison.OrdinalIgnoreCase) &&
+                    (x.Sig.IsVolume || string.Equals(Path.GetDirectoryName(x.Path), Path.GetDirectoryName(y.Path), StringComparison.OrdinalIgnoreCase)));
+                if (family != null)
+                    items[i] = x with
+                    {
+                        Key = LocalKey(x.Path, family.Stem, family.Kind),
+                        Stem = family.Stem,
+                        Kind = family.Kind,
+                        Number = family.Kind == VolumeKind.ZipSplit ? int.MaxValue : 0
+                    };
+            }
+        items = JoinScopedFamilies(items);
         var candidates = new List<ArchiveCandidate>();
         foreach (var group in items.GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
         {
@@ -244,7 +273,7 @@ public sealed class ArchiveScanner : IArchiveScanner
                 status = CandidateStatus.MissingVolumes;
                 explanation = "分卷不连续或缺少首卷/末卷。";
             }
-            else if (kind == VolumeKind.ByteSplit && a.Length == 1)
+            else if (kind is VolumeKind.ByteSplit or VolumeKind.RarParts or VolumeKind.RarLegacy && a.Length == 1)
             {
                 status = CandidateStatus.NeedsConfirmation;
                 explanation = "仅发现一个编号文件，无法确定是否缺卷。";
@@ -283,6 +312,11 @@ public sealed class ArchiveScanner : IArchiveScanner
                 status = CandidateStatus.NeedsConfirmation;
                 explanation = "检测到分卷标记，但无法确定其余分卷名称。";
             }
+            if (a.Any(x => x.CrossDirectoryAmbiguous))
+            {
+                status = CandidateStatus.NeedsConfirmation;
+                explanation = "不同导入目录含相同分卷序号；保留各目录分组，请分别确认，未自动混合。";
+            }
             var ext = format switch
             {
                 ArchiveFormat.Zip => "zip",
@@ -315,7 +349,7 @@ public sealed class ArchiveScanner : IArchiveScanner
         VolumeKind kind;
         int number;
         string stem;
-        if ((m = Regex.Match(n, @"^(.*)\.part(\d+)\.rar(?:\.[^.]+)?$", RegexOptions.IgnoreCase)).Success)
+        if ((m = Regex.Match(n, @"^(.*)\.part(\d+)\.(?:rar|exe)(?:\.[^.]+)?$", RegexOptions.IgnoreCase)).Success)
         {
             kind = VolumeKind.RarParts;
             stem = m.Groups[1].Value;
@@ -342,7 +376,33 @@ public sealed class ArchiveScanner : IArchiveScanner
         }
         else
             return new(p, s, p, Path.GetFileNameWithoutExtension(p), 0, VolumeKind.Single);
-        return new(p, s, Path.Combine(dir, stem) + "|" + kind, stem, number, kind);
+        if (kind == VolumeKind.ByteSplit && s.Format == ArchiveFormat.Rar && s.IsVolume)
+            kind = VolumeKind.RarParts;
+        return new(p, s, LocalKey(p, stem, kind), stem, number, kind);
+    }
+    static string LocalKey(string path, string stem, VolumeKind kind) => Path.Combine(Path.GetDirectoryName(path)!, stem) + "|" + kind;
+    static List<Item> JoinScopedFamilies(List<Item> items)
+    {
+        var result = new List<Item>(items.Count);
+        foreach (var family in items.GroupBy(x => x.Kind == VolumeKind.Single ? x.Key : x.Stem + "|" + x.Kind, StringComparer.OrdinalIgnoreCase))
+        {
+            var members = family.ToArray();
+            if (members[0].Kind == VolumeKind.Single || members.Select(x => Path.GetDirectoryName(x.Path)).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1)
+            {
+                result.AddRange(members);
+                continue;
+            }
+            if (members.GroupBy(x => x.Number).Any(g => g.Count() > 1))
+            {
+                // A name is not archive identity. Preserve separate sets instead of combining
+                // duplicate heads or choosing one of multiple possible continuation volumes.
+                result.AddRange(members.Select(x => x with { CrossDirectoryAmbiguous = true }));
+                continue;
+            }
+            string key = "scoped-family|" + family.Key;
+            result.AddRange(members.Select(x => x with { Key = key }));
+        }
+        return result;
     }
     static int Num(string s) => int.TryParse(s, out int n) ? n : int.MaxValue - 1;
     static bool Within(string path, string root) => path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);

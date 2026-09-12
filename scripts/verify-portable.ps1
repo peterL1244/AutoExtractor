@@ -2,7 +2,11 @@
 param([string]$PackageDirectory)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
-if (-not $PackageDirectory) { $PackageDirectory=Join-Path $root 'artifacts/AutoExtractor-win-x64' }
+if (-not $PackageDirectory) {
+    $version=([xml](Get-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Raw)).Project.PropertyGroup.Version
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid package version' }
+    $PackageDirectory=Join-Path $root "artifacts/AutoExtractor-v$version-win-x64"
+}
 $package=[IO.Path]::GetFullPath($PackageDirectory)
 $artifacts=Join-Path $root 'artifacts'
 New-Item -ItemType Directory -Force $artifacts | Out-Null

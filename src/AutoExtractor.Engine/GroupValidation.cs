@@ -42,7 +42,17 @@ internal static class GroupValidation
         long length = 0;
         foreach (var member in members)
             length = checked(length + new FileInfo(member.SourcePath).Length);
-        if (totalSizes.Length != 1 || Parse(totalSizes[0]) != length)
+        long firstVolumePrefix = 0;
+        if (!split && candidate.Format == ArchiveFormat.Rar && offsets.Length > 0)
+        {
+            if (offsets.Length != 1 || physicalSizes.Length != 1)
+                Reject("RAR 自解压前缀的元数据不明确。");
+            firstVolumePrefix = Parse(offsets[0]);
+            long firstVolumeLength = new FileInfo(members[0].SourcePath).Length;
+            if (firstVolumePrefix >= firstVolumeLength || Parse(physicalSizes[0]) != firstVolumeLength - firstVolumePrefix)
+                Reject("RAR 自解压前缀与首卷的实际大小不一致。");
+        }
+        if (totalSizes.Length != 1 || Parse(totalSizes[0]) != length - firstVolumePrefix)
             Reject("引擎实际读取的总大小与待还原成员不符。");
         string ext = candidate.Format switch
         {
