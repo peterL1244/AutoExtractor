@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../AutoExtractor.Core/AutoExtractor.Core.csproj" /></ItemGroup></Project>

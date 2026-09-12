@@ -1,0 +1,11 @@
+.tools/
+artifacts/
+.superpowers/
+**/bin/
+**/obj/
+.vs/
+TestResults/
+*.user
+**/AutoExtractor_Output/
+**/.autoextractor-*/
+
