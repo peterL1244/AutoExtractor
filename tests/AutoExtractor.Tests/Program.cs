@@ -6,4 +6,6 @@ ArchiveCompatibilityTests.Register();
 CrossDirectoryScannerTests.Register();
 CrossDirectoryRenameTests.Register();
 CrossDirectoryEngineTests.Register();
+FinalContentTests.Register();
+SfxCompletionTests.Register();
 return await TestRunner.RunAsync();

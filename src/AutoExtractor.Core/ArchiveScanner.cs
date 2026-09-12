@@ -11,6 +11,8 @@ public static class SignatureDetector
         using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         byte[] bytes = new byte[(int)Math.Min(f.Length, Limit)];
         f.ReadExactly(bytes);
+        if (IsElfExecutable(bytes))
+            return new(ArchiveFormat.Unknown, true, false, false);
         bool exe = bytes.Length >= 64 && bytes[0] == 'M' && bytes[1] == 'Z';
         if (exe)
         {
@@ -52,6 +54,13 @@ public static class SignatureDetector
             if (bytes.AsSpan(i, 4).SequenceEqual(new byte[] { 80, 75, 5, 6 }) && i + 22 + BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i + 20, 2)) == bytes.Length)
                 return new(ArchiveFormat.Zip, exe, exe, BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(i + 4, 2)) > 0);
         return new(ArchiveFormat.Unknown, exe, false, false);
+    }
+    static bool IsElfExecutable(ReadOnlySpan<byte> b)
+    {
+        if (b.Length < 52 || !b.StartsWith(new byte[] { 127, 69, 76, 70 }) || b[4] is not (1 or 2) || b[5] is not (1 or 2) || b[6] != 1 || b[4] == 2 && b.Length < 64)
+            return false;
+        ushort type = b[5] == 1 ? BinaryPrimitives.ReadUInt16LittleEndian(b.Slice(16, 2)) : BinaryPrimitives.ReadUInt16BigEndian(b.Slice(16, 2));
+        return type is 2 or 3;
     }
     static bool HasZipVolumeFooter(FileStream file, ReadOnlySpan<byte> header)
     {
@@ -168,7 +177,7 @@ public static class SignatureDetector
 }
 public sealed class ArchiveScanner : IArchiveScanner
 {
-    static readonly HashSet<string> Native = new(StringComparer.OrdinalIgnoreCase) { ".jar", ".apk", ".aab", ".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm", ".odt", ".ods", ".odp", ".epub", ".nupkg", ".pak", ".unity3d", ".assets", ".vpk", ".rpa" };
+    static readonly HashSet<string> Native = new(StringComparer.OrdinalIgnoreCase) { ".jar", ".apk", ".aab", ".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm", ".odt", ".ods", ".odp", ".epub", ".nupkg", ".pak", ".unity3d", ".assets", ".vpk", ".rpa", ".pck" };
     record Item(string Path, SignatureInfo Sig, string Key, string Stem, int Number, VolumeKind Kind, bool CrossDirectoryAmbiguous = false);
     public Task<ScanResult> ScanAsync(IEnumerable<string> inputs, CancellationToken cancellationToken = default)
     {
@@ -212,6 +221,21 @@ public sealed class ArchiveScanner : IArchiveScanner
             catch (IOException e) { messages.Add($"无法读取 {p}: {e.Message}"); }
             catch (UnauthorizedAccessException e) { messages.Add($"无法读取 {p}: {e.Message}"); }
         }
+        // A loose numeric basename can be a product ID. Preserve explicit volume syntax
+        // and plausible continuation members, but do not merge independent SFX packages.
+        var looseSfx = items.Where(x => x.Kind == VolumeKind.ByteSplit && x.Sig.IsSelfExtracting && !x.Sig.IsVolume &&
+            !Regex.IsMatch(Path.GetFileName(x.Path), @"\.\d+(?:\.[^.]+)?$")).ToArray();
+        foreach (var x in looseSfx)
+            if (!items.Any(y => y.Path != x.Path && y.Kind == VolumeKind.ByteSplit &&
+                string.Equals(y.Stem, x.Stem, StringComparison.OrdinalIgnoreCase) &&
+                (y.Number == x.Number || !looseSfx.Contains(y))))
+                items[items.IndexOf(x)] = x with
+                {
+                    Key = x.Path,
+                    Stem = Path.GetFileNameWithoutExtension(x.Path),
+                    Number = 0,
+                    Kind = VolumeKind.Single
+                };
         // Include anchors from already-scoped paths only. Keep each member's local key until
         // the family-level ambiguity check decides whether separate directories can be joined.
         for (int i = 0; i < items.Count; i++)

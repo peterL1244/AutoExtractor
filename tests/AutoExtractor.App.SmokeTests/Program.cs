@@ -104,7 +104,9 @@ internal static class Program
             await stderr;
             Check(process.ExitCode == 0, "Fixture creation failed");
         }
-        await window.ImportAsync([encrypted]);
+        string numberedSfx = Path.Combine(Root, "download3397.exe");
+        File.WriteAllBytes(numberedSfx, [.. File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "tools", "7zip", "7z.exe")), .. File.ReadAllBytes(encrypted)]);
+        await window.ImportAsync([numberedSfx]);
         int attempts = 0;
         var dialogs = new HashSet<Window>();
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(30) };
@@ -123,6 +125,8 @@ internal static class Program
         await Idle(window);
         row = Rows(window).Single();
         Check(row.Result!.RemainingCandidates.Count == 1, "Smart stop should retain inner candidate");
+        var applicationDirectory = Path.GetDirectoryName(Directory.GetFiles(row.Result.OutputDirectory, "app.exe", SearchOption.AllDirectories).Single());
+        Check(row.Result.BrowseDirectory == applicationDirectory && row.Details.Contains(applicationDirectory!), "The result should point to the software folder");
         Click(window, "ContinueButton");
         Check(Rows(window).Count == 2, "Continue should enqueue inner archive");
         Click(window, "StartButton");

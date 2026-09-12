@@ -201,8 +201,8 @@ public partial class MainWindow : Window
                     var attemptCandidate = await Task.Run(() => renamer.ResolveAppliedCandidateAsync(row.Candidate, active.Token));
                     row.Result = await Task.Run(() => coordinator.RunAsync(attemptCandidate, new ExtractionOptions(output), RequestPasswordAsync, progress, active.Token));
                     row.Status = row.Result.RemainingCandidates.Count > 0 || row.Result.Messages.Any(m => m.Contains("失败") || m.Contains("未完成")) ? "已解压 · 待处理" : "完成";
-                    row.Details += Environment.NewLine + "结果目录：" + row.Result.OutputDirectory + Environment.NewLine + string.Join(Environment.NewLine, row.Result.Messages);
-                    lastOutput = row.Result.OutputDirectory;
+                    row.Details += Environment.NewLine + "内容目录：" + row.Result.BrowseDirectory + Environment.NewLine + "全部解压文件：" + row.Result.OutputDirectory + Environment.NewLine + string.Join(Environment.NewLine, row.Result.Messages);
+                    lastOutput = row.Result.BrowseDirectory;
                     completed++;
                 }
                 catch (OperationCanceledException) { row.Status = "已取消"; row.Details += "\n任务已取消；已还原的文件名可通过恢复原名撤销。"; }
@@ -235,7 +235,7 @@ public partial class MainWindow : Window
     }
     private void Open_Click(object sender, RoutedEventArgs e)
     {
-        var output = (TaskList.SelectedItem as TaskRow)?.Result?.OutputDirectory ?? lastOutput;
+        var output = (TaskList.SelectedItem as TaskRow)?.Result?.BrowseDirectory ?? lastOutput;
         if (output is not null && Directory.Exists(output))
             Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { output }, UseShellExecute = false });
         else
@@ -266,7 +266,7 @@ public partial class MainWindow : Window
         if (row.Result.RemainingCandidates.Count > 0)
             AddRows(row.Result.RemainingCandidates);
         else
-            await ImportAsync([row.Result.OutputDirectory]);
+            await ImportAsync([row.Result.BrowseDirectory]);
         StatusLabel.Text = "内层候选已加入列表 · 可调整分卷后开始解压";
     }
     private async void Restore_Click(object sender, RoutedEventArgs e)

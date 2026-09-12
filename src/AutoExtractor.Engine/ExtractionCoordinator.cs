@@ -20,6 +20,7 @@ public sealed class ExtractionCoordinator(IArchiveScanner scanner, IRenameServic
         var journals = new List<string>();
         var remaining = new List<ArchiveCandidate>();
         var messages = new List<string>();
+        var contentDirectories = new List<string>();
         var passwords = new List<string>();
         var seenHashes = new HashSet<string>(StringComparer.Ordinal);
         int sequence = 0;
@@ -27,7 +28,12 @@ public sealed class ExtractionCoordinator(IArchiveScanner scanner, IRenameServic
         try
         {
             await ProcessCandidate(candidate, 1, true);
-            return new(taskDirectory, journals, remaining, messages);
+            var distinctContent = contentDirectories.Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(path => !contentDirectories.Any(other => IsWithin(path, other))).ToArray();
+            var content = distinctContent.Length == 1
+                && remaining.All(candidate => candidate.Members.All(member => IsWithin(member.SourcePath, distinctContent[0])))
+                && !messages.Any(message => message.Contains("未完成", StringComparison.Ordinal)) ? distinctContent[0] : null;
+            return new(taskDirectory, journals, remaining, messages, content);
         }
         finally { passwords.Clear(); }
 
@@ -83,6 +89,7 @@ public sealed class ExtractionCoordinator(IArchiveScanner scanner, IRenameServic
                 var scan = await scanner.ScanAsync([completed], cancellationToken);
                 messages.AddRange(scan.Messages);
                 var stops = options.SmartStop ? FindApplicationDirectories(completed, scan.Candidates) : [];
+                RecordContentDirectories(completed, scan.Candidates, stops, contentDirectories);
                 foreach (var child in scan.Candidates.Where(c => c.Status != CandidateStatus.Ignored))
                 {
                     if (stops.Any(dir => child.Members.Any(member => IsWithin(member.SourcePath, dir))))
@@ -157,6 +164,35 @@ public sealed class ExtractionCoordinator(IArchiveScanner scanner, IRenameServic
         return string.IsNullOrWhiteSpace(result) ? "archive" : result;
     }
     static bool IsWithin(string path, string directory) => Path.GetFullPath(path).StartsWith(Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    static void RecordContentDirectories(string completed, IReadOnlyList<ArchiveCandidate> candidates, IReadOnlyList<string> softwareDirectories, List<string> contentDirectories)
+    {
+        var archivePaths = candidates.SelectMany(candidate => candidate.Members).Select(member => Path.GetFullPath(member.SourcePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
+        bool uncoveredPayload = Directory.EnumerateFiles(completed, "*", options)
+            .Any(file => !archivePaths.Contains(Path.GetFullPath(file)) && !softwareDirectories.Any(directory => IsWithin(file, directory)));
+        if (!uncoveredPayload)
+            uncoveredPayload = Directory.EnumerateDirectories(completed, "*", options)
+                .Any(directory => !softwareDirectories.Any(software => directory.Equals(software, StringComparison.OrdinalIgnoreCase) || IsWithin(directory, software))
+                    && !Directory.EnumerateFileSystemEntries(directory).Any());
+        if (uncoveredPayload)
+            contentDirectories.Add(UnwrapContentDirectory(completed));
+        else if (softwareDirectories.Count > 0)
+            contentDirectories.AddRange(softwareDirectories);
+        else if (candidates.All(candidate => candidate.Status == CandidateStatus.Ignored))
+            contentDirectories.Add(UnwrapContentDirectory(completed));
+    }
+    static string UnwrapContentDirectory(string directory)
+    {
+        // Choose where to browse without moving or flattening the archive's own directory tree.
+        while (true)
+        {
+            ArchiveSafety.CheckParents(directory);
+            var children = Directory.EnumerateFileSystemEntries(directory).Take(2).ToArray();
+            if (children.Length != 1 || !Directory.Exists(children[0]))
+                return directory;
+            directory = children[0];
+        }
+    }
     static List<string> FindApplicationDirectories(string root, IReadOnlyList<ArchiveCandidate> candidates)
     {
         var archivePaths = candidates.SelectMany(c => c.Members).Select(m => Path.GetFullPath(m.SourcePath)).ToHashSet(StringComparer.OrdinalIgnoreCase);

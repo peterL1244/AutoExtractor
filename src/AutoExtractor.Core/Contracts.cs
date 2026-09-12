@@ -75,4 +75,7 @@ public interface IArchiveEngine
 }
 public record PasswordRequest(string ArchiveName, int Layer, bool PreviousFailed, string Message);
 public record ExtractionOptions(string? OutputDirectory = null, int MaxDepth = 10, bool SmartStop = true);
-public record ExtractionResult(string OutputDirectory, IReadOnlyList<string> Journals, IReadOnlyList<ArchiveCandidate> RemainingCandidates, IReadOnlyList<string> Messages);
+public record ExtractionResult(string OutputDirectory, IReadOnlyList<string> Journals, IReadOnlyList<ArchiveCandidate> RemainingCandidates, IReadOnlyList<string> Messages, string? ContentDirectory = null)
+{
+    public string BrowseDirectory => ContentDirectory ?? OutputDirectory;
+}
